@@ -1,6 +1,13 @@
 # utils.py
 """
 Utility functions and class definitions shared across training and evaluation scripts.
+
+Contains:
+- Model Definitions (Generator3D, Discriminator3D, ResNetBlock3D)
+- Dataset Class (PairedPreprocessedDataset)
+- Checkpoint/Model Saving/Loading Functions
+- Logging Class (Logger)
+- Helper Functions (update_image_pool)
 """
 import os
 import torch
@@ -16,7 +23,7 @@ import sys
 import random # Needed for update_image_pool
 
 # ------------------------------
-# Model Definitions (Copied from train_cycleGAN_v3.py)
+# Model Definitions
 # ------------------------------
 class Discriminator3D(nn.Module):
     def __init__(self, in_channels):
@@ -79,13 +86,13 @@ class Generator3D(nn.Module):
         return self.model(x)
 
 # ------------------------------
-# Dataset Class (Copied from train_cycleGAN_v3.py)
+# Dataset Class
 # ------------------------------
 class PairedPreprocessedDataset(Dataset):
     def __init__(self, dir_path, mapping_type, augment=False, torchio_transform=None):
         """
         Loads preprocessed .npy files, selects channels, rescales, and applies transforms.
-
+        Now also stores file paths.
         Args:
             dir_path (str): Directory with .npy files (shape H,W,D,C).
                               **ASSUMES PREPROCESSING SAVED AS [FLAIR(0), T1CE(1), T2(2), T1(3)] channels.**
@@ -94,9 +101,8 @@ class PairedPreprocessedDataset(Dataset):
             augment (bool): If True, apply transformations defined in torchio_transform.
             torchio_transform (torchio.Compose, optional): Torchio transform pipeline.
         """
-        # Use glob.escape for robustness with paths containing special characters
         search_path = os.path.join(dir_path, '*.npy')
-        self.files = sorted(glob(search_path)) # Call glob function directly
+        self.files = sorted(glob(search_path)) # Use glob directly
         if not self.files:
              print(f"Warning: No .npy files found matching pattern: {search_path}")
         self.mapping_type = mapping_type
@@ -107,63 +113,65 @@ class PairedPreprocessedDataset(Dataset):
         return len(self.files)
 
     def __getitem__(self, idx):
-        file_path = self.files[idx]
+        file_path = self.files[idx] # Get the file path for this index
         try:
             # Load data assuming (H, W, D, C) channel order from preprocessing
             # Assumes data range is [0, 1] after loading
             volume = np.load(file_path).astype(np.float32)
             if volume.ndim == 5 and volume.shape[0] == 1:
-                volume = volume[0] # Remove leading singleton dimension if present
+                volume = volume[0]
 
             # Transpose from (H,W,D,C) to (C,D,H,W) - PyTorch/Torchio convention
-            # Resulting Channel Order: [FLAIR(0), T1CE(1), T2(2), T1(3)]
             volume = np.transpose(volume, (3, 2, 0, 1))
+            # Channel Order: [FLAIR(0), T1CE(1), T2(2), T1(3)]
 
-            # --- Step 1: Fix Channel Indices ---
+            # Select Modalities
             if self.mapping_type == "t2_flair":
-                # A = T2 (Index 2), B = FLAIR (Index 0)
-                img_A_raw = volume[2:3, ...]
-                img_B_raw = volume[0:1, ...]
+                img_A_raw = volume[2:3, ...] # T2
+                img_B_raw = volume[0:1, ...] # FLAIR
             elif self.mapping_type == "t1_contrast":
-                # A = T1 (Index 3), B = T1CE (Index 1)
-                img_A_raw = volume[3:4, ...]
-                img_B_raw = volume[1:2, ...]
+                img_A_raw = volume[3:4, ...] # T1
+                img_B_raw = volume[1:2, ...] # T1CE
             else:
                 raise ValueError(f"Unknown mapping_type: {self.mapping_type}")
 
-            # --- Step 2: Add Normalization Rescaling ---
-            # Rescale from [0, 1] (output of preprocessing) to [-1, 1] (input for CycleGAN Tanh)
+            # Rescale from [0, 1] to [-1, 1]
             img_A = img_A_raw * 2.0 - 1.0
             img_B = img_B_raw * 2.0 - 1.0
 
-            # --- Combine, Augment (Optional), Split Back ---
-            # Combine modalities for consistent spatial augmentation
-            # Use np.stack which handles the new axis, then squeeze if needed
-            combined_modalities = np.stack((img_A.squeeze(0), img_B.squeeze(0)), axis=0) # Shape (2, D, H, W)
+            # Combine, Augment (Optional), Split Back
+            combined_modalities = np.stack((img_A.squeeze(0), img_B.squeeze(0)), axis=0)
             combined_tensor = torch.from_numpy(combined_modalities)
 
-            # Apply Torchio augmentations if enabled
             if self.augment and self.transform:
                 subject = tio.Subject(modalities=tio.ScalarImage(tensor=combined_tensor))
                 augmented_subject = self.transform(subject)
                 augmented_tensor = augmented_subject['modalities'].data
             else:
-                augmented_tensor = combined_tensor # No augmentation
+                augmented_tensor = combined_tensor
 
-            # Split back into individual modalities [1, D, H, W]
             final_img_A = augmented_tensor[0:1, ...]
             final_img_B = augmented_tensor[1:2, ...]
 
-            return final_img_A, final_img_B
+            # <<< CHANGE: Return file_path along with images >>>
+            return final_img_A, final_img_B, file_path
 
         except FileNotFoundError:
             print(f"Error: File not found {file_path}", file=sys.stderr)
-            raise
+            # Return None or dummy data if you want to handle errors gracefully in the loader
+            return None, None, file_path # Example: return None for images, keep path
         except Exception as e:
             print(f"Error processing file {file_path}: {e}", file=sys.stderr)
-            # Return None or dummy data might be better than raising here
-            # depending on how DataLoader handles errors. Raising is safer.
-            raise
+            return None, None, file_path # Example: return None for images, keep path
+
+# --- You might need a custom collate function for the DataLoader ---
+# --- if __getitem__ can return None, to filter out bad samples ---
+# def collate_fn_skip_none(batch):
+#     batch = list(filter(lambda x: x[0] is not None and x[1] is not None, batch))
+#     if not batch:
+#         return None # Return None if the whole batch is bad
+#     return torch.utils.data.dataloader.default_collate(batch)
+# # Then use in DataLoader: `collate_fn=collate_fn_skip_none`
 
 # ------------------------------
 # Checkpoint Loading (Copied from train_cycleGAN_v3.py)
@@ -232,7 +240,7 @@ def load_checkpoint(checkpoint_path, g_model_AtoB, g_model_BtoA, d_model_A, d_mo
         return 0
 
 # ------------------------------
-# Logger Class (Copied from train_cycleGAN_v3.py)
+# Logger Class
 # ------------------------------
 class Logger:
     def __init__(self, log_dir, mapping_type):
@@ -280,7 +288,7 @@ class Logger:
              print(f"No valid previous log file found at {previous_log}. Starting new log.")
 
 # ------------------------------
-# Image Pool (Copied from train_cycleGAN_v3.py)
+# Image Pool
 # ------------------------------
 def update_image_pool(pool, images, max_size=50):
     """Keeps a buffer of generated images for stabilizing discriminator training."""
@@ -309,4 +317,19 @@ def update_image_pool(pool, images, max_size=50):
         return torch.empty(0) # Return an empty tensor
     return torch.cat(selected, dim=0)
 
+# ------------------------------
+# Utility: Save models periodically
+# ------------------------------
+def save_models(epoch, g_model_AtoB, g_model_BtoA, mapping_type, save_dir='./models'):
+    """Saves generator models periodically."""
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    filename1 = os.path.join(save_dir, f'g_model_AtoB_{mapping_type}_epoch{epoch+1:03d}.pth')
+    filename2 = os.path.join(save_dir, f'g_model_BtoA_{mapping_type}_epoch{epoch+1:03d}.pth')
+    try:
+        torch.save(g_model_AtoB.state_dict(), filename1)
+        torch.save(g_model_BtoA.state_dict(), filename2)
+        print(f'>Saved models: {filename1}, {filename2}')
+    except Exception as e:
+        print(f"Error saving models at epoch {epoch+1}: {e}", file=sys.stderr)
 

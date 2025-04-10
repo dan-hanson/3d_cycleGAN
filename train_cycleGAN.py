@@ -78,35 +78,38 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 from torchsummary import summary
 from torch.utils.tensorboard import SummaryWriter
+from utils import Logger, update_image_pool, Discriminator3D, Generator3D, ResNetBlock3D, PairedPreprocessedDataset, save_models
 import torchio as tio
 import sys
 
 # --- Import Metrics ---
 try:
-    import torchmetrics # <<< Import the module itself
-    from torchmetrics import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
+    import torchmetrics
+    from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 except ImportError:
     print("Error: torchmetrics not found. Please install it: pip install torchmetrics", file=sys.stderr)
-    sys.exit(1)
+    # Define dummy classes if not found, evaluation will fail later if used
+    PeakSignalNoiseRatio = type('DummyMetric', (object,), {'to': lambda self, device: self, 'reset': lambda self: None, 'update': lambda self, *args: None, 'compute': lambda self: torch.tensor(0.0)})
+    StructuralSimilarityIndexMeasure = type('DummyMetric', (object,), {'to': lambda self, device: self, 'reset': lambda self: None, 'update': lambda self, *args: None, 'compute': lambda self: torch.tensor(0.0)})
 
 # --- Import display_random_slices ---
 try:
     from augmentation import display_random_slices
 except ImportError:
     print("Warning: augmentation.py not found. display_random_slices will not be available.")
-    # Define a dummy function if the import fails, so the script doesn't crash
     def display_random_slices(*args, **kwargs):
         print("display_random_slices unavailable (augmentation.py not found).")
 
-# --- torch.compile with error handling ---
-# by running those specific operations in the default eager mode.
-# This might provide partial speedup without crashing.
+# --- torch.compile error suppression (optional) ---
+# Can be enabled if torch.compile is used and causes issues
+# Moved print statement to main script guard
 try:
     import torch._dynamo
     torch._dynamo.config.suppress_errors = True
-    print("TorchDynamo error suppression enabled.")
+    # print("TorchDynamo error suppression enabled.")
 except ImportError:
-    print("torch._dynamo not found, assuming older PyTorch version or no compile usage.")
+    pass # Ignore if torch._dynamo not found
+    # print("torch._dynamo not found, assuming older PyTorch version or no compile usage.")
 
 # --- Sample visualization ---
 try:
@@ -115,241 +118,6 @@ try:
 except ImportError:
     print("Warning: Could not import visualize_sample_translations from evaluation.py. Skipping visualization.", file=sys.stderr)
     visualize_sample_translations = None # Set to None to prevent errors
-
-device = None
-
-# ------------------------------
-# Utility: Save training log to disk
-# ------------------------------
-class Logger:
-    def __init__(self, log_dir, mapping_type):
-        os.makedirs(log_dir, exist_ok=True)
-        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-        self.log_path = os.path.join(log_dir, f'{mapping_type}_log_{timestamp}.json')
-        self.log_data = []
-        print(f"Logging to: {self.log_path}")
-
-    def log(self, epoch, i, metrics):
-        """Log metrics at a given training step/epoch."""
-        serializable_metrics = {}
-        for k, v in metrics.items():
-            if isinstance(v, torch.Tensor):
-                serializable_metrics[k] = v.item()
-            elif isinstance(v, np.ndarray):
-                 serializable_metrics[k] = v.tolist() # Or item() if scalar
-            elif isinstance(v, (int, float, str, bool, list, dict, type(None))):
-                 serializable_metrics[k] = v
-            else:
-                 serializable_metrics[k] = str(v) # Fallback
-
-        record = {'epoch': epoch, 'iteration': i} # Use 'iteration' for step, or 'n_steps' for epoch end
-        record.update(serializable_metrics)
-        self.log_data.append(record)
-
-    def save(self):
-        """Write log data to disk as JSON."""
-        try:
-            with open(self.log_path, 'w') as f:
-                json.dump(self.log_data, f, indent=2)
-        except Exception as e:
-            print(f"Error saving log file {self.log_path}: {e}", file=sys.stderr)
-
-    def append_from_file(self, previous_log):
-        """Load previous training log to continue appending."""
-        if previous_log and os.path.exists(previous_log):
-            try:
-                with open(previous_log, 'r') as f:
-                    self.log_data = json.load(f)
-                print(f"Appended previous log data from: {previous_log}")
-            except Exception as e:
-                 print(f"Error loading previous log file {previous_log}: {e}", file=sys.stderr)
-        else:
-             print(f"No valid previous log file found at {previous_log}. Starting new log.")
-
-# ------------------------------
-# Dataset Class
-# ------------------------------
-class PairedPreprocessedDataset(Dataset):
-    def __init__(self, dir_path, mapping_type, augment=False, torchio_transform=None):
-        """
-        Loads preprocessed .npy files, selects channels, rescales, and applies transforms.
-
-        Args:
-            dir_path (str): Directory with .npy files (shape H,W,D,C).
-                              **ASSUMES PREPROCESSING SAVED AS [FLAIR(0), T1CE(1), T2(2), T1(3)] channels.**
-                              **ASSUMES PREPROCESSING NORMALIZED TO [0, 1].**
-            mapping_type (str): Either "t2_flair" or "t1_contrast".
-            augment (bool): If True, apply transformations defined in torchio_transform.
-            torchio_transform (torchio.Compose, optional): Torchio transform pipeline.
-        """
-        # Use glob.escape for robustness with paths containing special characters
-        search_path = os.path.join(dir_path, '*.npy')
-        self.files = sorted(glob(search_path)) # Call glob function directly
-        if not self.files:
-             print(f"Warning: No .npy files found matching pattern: {search_path}")
-        self.mapping_type = mapping_type
-        self.augment = augment
-        self.transform = torchio_transform
-
-    def __len__(self):
-        return len(self.files)
-
-    def __getitem__(self, idx):
-        file_path = self.files[idx]
-        try:
-            # Load data assuming (H, W, D, C) channel order from preprocessing
-            # Assumes data range is [0, 1] after loading
-            volume = np.load(file_path).astype(np.float32)
-            if volume.ndim == 5 and volume.shape[0] == 1:
-                volume = volume[0] # Remove leading singleton dimension if present
-
-            # Transpose from (H,W,D,C) to (C,D,H,W) - PyTorch/Torchio convention
-            # Resulting Channel Order: [FLAIR(0), T1CE(1), T2(2), T1(3)]
-            volume = np.transpose(volume, (3, 2, 0, 1))
-
-            # --- Step 1: Fix Channel Indices ---
-            if self.mapping_type == "t2_flair":
-                # A = T2 (Index 2), B = FLAIR (Index 0)
-                img_A_raw = volume[2:3, ...]
-                img_B_raw = volume[0:1, ...]
-            elif self.mapping_type == "t1_contrast":
-                # A = T1 (Index 3), B = T1CE (Index 1)
-                img_A_raw = volume[3:4, ...]
-                img_B_raw = volume[1:2, ...]
-            else:
-                raise ValueError(f"Unknown mapping_type: {self.mapping_type}")
-
-            # --- Step 2: Add Normalization Rescaling ---
-            # Rescale from [0, 1] (output of preprocessing) to [-1, 1] (input for CycleGAN Tanh)
-            img_A = img_A_raw * 2.0 - 1.0
-            img_B = img_B_raw * 2.0 - 1.0
-
-            # --- Combine, Augment (Optional), Split Back ---
-            # Combine modalities for consistent spatial augmentation
-            # Use np.stack which handles the new axis, then squeeze if needed
-            combined_modalities = np.stack((img_A.squeeze(0), img_B.squeeze(0)), axis=0) # Shape (2, D, H, W)
-            combined_tensor = torch.from_numpy(combined_modalities)
-
-            # Apply Torchio augmentations if enabled
-            if self.augment and self.transform:
-                subject = tio.Subject(modalities=tio.ScalarImage(tensor=combined_tensor))
-                augmented_subject = self.transform(subject)
-                augmented_tensor = augmented_subject['modalities'].data
-            else:
-                augmented_tensor = combined_tensor # No augmentation
-
-            # Split back into individual modalities [1, D, H, W]
-            final_img_A = augmented_tensor[0:1, ...]
-            final_img_B = augmented_tensor[1:2, ...]
-
-            return final_img_A, final_img_B
-
-        except FileNotFoundError:
-            print(f"Error: File not found {file_path}", file=sys.stderr)
-            raise
-        except Exception as e:
-            print(f"Error processing file {file_path}: {e}", file=sys.stderr)
-            raise
-
-# ------------------------------
-# Model Definitions (Discriminator3D, ResNetBlock3D, Generator3D)
-# ------------------------------
-class Discriminator3D(nn.Module):
-    def __init__(self, in_channels):
-        super(Discriminator3D, self).__init__()
-        self.model = nn.Sequential(
-            nn.Conv3d(in_channels, 32, kernel_size=4, stride=2, padding=1), nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv3d(32, 64, kernel_size=4, stride=2, padding=1), nn.InstanceNorm3d(64, affine=True), nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv3d(64, 128, kernel_size=4, stride=2, padding=1), nn.InstanceNorm3d(128, affine=True), nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv3d(128, 256, kernel_size=4, stride=2, padding=1), nn.InstanceNorm3d(256, affine=True), nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv3d(256, 256, kernel_size=4, stride=1, padding=1), nn.InstanceNorm3d(256, affine=True), nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv3d(256, 1, kernel_size=4, stride=1, padding=1) # Output is a patch map
-        )
-    def forward(self, x):
-        return self.model(x)
-
-class ResNetBlock3D(nn.Module):
-    def __init__(self, channels):
-        super(ResNetBlock3D, self).__init__()
-        self.conv_block = nn.Sequential(
-            nn.Conv3d(channels, channels, kernel_size=3, padding=1, bias=False), nn.InstanceNorm3d(channels, affine=True), nn.ReLU(inplace=True),
-            nn.Conv3d(channels, channels, kernel_size=3, padding=1, bias=False), nn.InstanceNorm3d(channels, affine=True)
-        )
-    def forward(self, x):
-        return x + self.conv_block(x) # Residual connection
-
-class Generator3D(nn.Module):
-    def __init__(self, in_channels, out_channels, n_resnet=9):
-        super(Generator3D, self).__init__()
-        ngf = 32 # Number of generator filters in the first conv layer
-        model = [
-            nn.Conv3d(in_channels, ngf, kernel_size=7, padding=3, bias=False), nn.InstanceNorm3d(ngf, affine=True), nn.ReLU(inplace=True)
-        ]
-        # Downsampling
-        n_downsampling = 2
-        for i in range(n_downsampling):
-            mult = 2**i
-            model += [
-                nn.Conv3d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1, bias=False),
-                nn.InstanceNorm3d(ngf * mult * 2, affine=True), nn.ReLU(inplace=True)
-            ]
-        # ResNet blocks
-        mult = 2**n_downsampling
-        for i in range(n_resnet):
-            model += [ResNetBlock3D(ngf * mult)]
-        # Upsampling
-        for i in range(n_downsampling):
-            mult = 2**(n_downsampling - i)
-            model += [
-                nn.ConvTranspose3d(ngf * mult, int(ngf * mult / 2), kernel_size=3, stride=2, padding=1, output_padding=1, bias=False),
-                nn.InstanceNorm3d(int(ngf * mult / 2), affine=True), nn.ReLU(inplace=True)
-            ]
-        # Final layer
-        model += [
-            nn.Conv3d(ngf, out_channels, kernel_size=7, padding=3),
-            nn.Tanh() # Output range [-1, 1]
-        ]
-        self.model = nn.Sequential(*model)
-
-    def forward(self, x):
-        return self.model(x)
-
-# ------------------------------
-# Utility: Update image pool
-# ------------------------------
-def update_image_pool(pool, images, max_size=50):
-    """Keeps a buffer of generated images for stabilizing discriminator training."""
-    selected = []
-    for image in images:
-        image = image.detach() # Detach from computation graph
-        if image.dim() == 4:
-            image = image.unsqueeze(0)
-        if len(pool) < max_size:
-            pool.append(image)
-            selected.append(image)
-        elif random.random() < 0.5:
-            selected.append(image)
-        else:
-            ix = random.randint(0, max_size - 1)
-            selected.append(pool[ix].clone())
-            pool[ix] = image
-    return torch.cat(selected, dim=0)
-
-# ------------------------------
-# Utility: Save models periodically
-# ------------------------------
-def save_models(epoch, g_model_AtoB, g_model_BtoA, mapping_type, save_dir='./models'):
-    """Saves generator models periodically."""
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
-    filename1 = os.path.join(save_dir, f'g_model_AtoB_{mapping_type}_epoch{epoch+1:03d}.pth')
-    filename2 = os.path.join(save_dir, f'g_model_BtoA_{mapping_type}_epoch{epoch+1:03d}.pth')
-    try:
-        torch.save(g_model_AtoB.state_dict(), filename1)
-        torch.save(g_model_BtoA.state_dict(), filename2)
-        print(f'>Saved models: {filename1}, {filename2}')
-    except Exception as e:
-        print(f"Error saving models at epoch {epoch+1}: {e}", file=sys.stderr)
 
 # ------------------------------
 # Utility: Checkpoint saving and loading
@@ -603,7 +371,7 @@ def train(d_model_A, d_model_B, g_model_AtoB, g_model_BtoA,
         for i, batch in enumerate(progress_bar):
             if batch is None: continue
             try:
-                 real_A, real_B = batch
+                 real_A, real_B, _ = batch
                  real_A = real_A.to(device, non_blocking=True)
                  real_B = real_B.to(device, non_blocking=True)
             except Exception as e:
@@ -801,6 +569,8 @@ def train(d_model_A, d_model_B, g_model_AtoB, g_model_BtoA,
 # Main Execution
 # ------------------------------
 if __name__ == '__main__':
+    
+    global device
     # ------------------------------
     # Check Environment and GPU
     # ------------------------------
@@ -809,19 +579,15 @@ if __name__ == '__main__':
     print(f"PyTorch Version: {torch.__version__}")
     print(f"Torchio Version: {tio.__version__}")
     try:
-        # Now this should work because torchmetrics is imported
         print(f"TorchMetrics Version: {torchmetrics.__version__}")
-    except Exception: # Catch potential attribute error if __version__ is missing
-        print("TorchMetrics Version: (could not determine)")
+    except Exception: print("TorchMetrics Version: (could not determine)")
 
     print(f"CUDA available: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
         try:
             device = torch.device("cuda")
             print(f"Using device: {device} ({torch.cuda.get_device_name(device)})")
-            # Small test
-            x = torch.randn(1).to(device)
-            print("GPU test successful.")
+            x = torch.randn(1).to(device); print("GPU test successful.")
         except Exception as e:
             print(f"GPU test failed: {e}. Falling back to CPU.", file=sys.stderr)
             device = torch.device("cpu")

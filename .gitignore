@@ -1,0 +1,18 @@
+# cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# data files
+data/BraTS2020_ValidationData/
+data/MICCAI_BraTS2020_TrainingData/
+data/processed_data/
+
+# results/outputs
+output/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+

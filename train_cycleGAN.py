@@ -211,7 +211,7 @@ def evaluate_epoch(g_model_AtoB, g_model_BtoA, val_loader,
     count = 0
 
     with torch.no_grad():
-        for real_A, real_B in tqdm(val_loader, desc="Validation", leave=False, file=sys.stdout):
+        for real_A, real_B, _ in tqdm(val_loader, desc="Validation", leave=False, file=sys.stdout):
             real_A = real_A.to(device) # Should be [-1, 1]
             real_B = real_B.to(device) # Should be [-1, 1]
 

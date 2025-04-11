@@ -1,5 +1,5 @@
 """
-3D CycleGAN for Synthetic MRI Modality Translation - Enhanced Training Script
+3D CycleGAN for Synthetic MRI Modality Translation - Training Script
 
 Objective:
 Train a 3D CycleGAN model to translate between paired MRI modalities using
@@ -35,20 +35,20 @@ Recommended Data Input:
 Example Usage:
     # Train T2 <-> FLAIR mapping
     # (Use ^ for Windows CMD line continuation, \ for Linux/macOS)
-    python train_cycleGAN_v3.py ^
+    python train_cycleGAN.py ^
         --mapping_type t2_flair ^
         --epochs 150 ^
-        --data_dir path/to/processed_data/brats_split_01/train/images ^
-        --val_data_dir path/to/processed_data/brats_split_01/val/images ^
+        --data_dir path/to/data/processed_data/brats128_training/images ^
+        --val_data_dir path/to/data/processed_data/brats128_validation/images ^
         --output_base_dir ./output ^
         --use_tb
 
     # Resume T1 <-> T1CE training
-    python train_cycleGAN_v3.py ^
+    python train_cycleGAN.py ^
         --mapping_type t1_contrast ^
         --epochs 200 ^
-        --data_dir path/to/processed_data/brats_split_01/train/images ^
-        --val_data_dir path/to/processed_data/brats_split_01/val/images ^
+        --data_dir path/to/data/processed_data/brats128_training/images ^
+        --val_data_dir path/to/data/processed_data/brats128_validation/images ^
         --output_base_dir ./output ^
         --resume ./output/t1_contrast/checkpoints/checkpoint_t1_contrast_epoch099_....pth ^
         --use_tb
@@ -145,7 +145,6 @@ def save_checkpoint(epoch, g_model_AtoB, g_model_BtoA, d_model_A, d_model_B,
         'scheduler_D_B_state': scheduler_D_B.state_dict(),
         'mapping_type': mapping_type,
         'n_resnet': n_resnet_val # Save n_resnet value passed to train function
-        # Removed problematic inference line: 'n_resnet': g_model_AtoB.model[-3].conv_block[0].in_channels // 32
     }
     filename = os.path.join(checkpoint_dir, f'checkpoint_{mapping_type}_epoch{epoch:03d}_{timestamp}.pth')
     try:
@@ -383,7 +382,7 @@ def train(d_model_A, d_model_B, g_model_AtoB, g_model_BtoA,
             real_A_unpadded = real_A
             real_B_unpadded = real_B
 
-            # --- Generator Update ---
+            # --- Generator ---
             optimizer_G.zero_grad()
 
             fake_B = g_model_AtoB(real_A_padded)
@@ -473,7 +472,6 @@ def train(d_model_A, d_model_B, g_model_AtoB, g_model_BtoA,
                             writer.add_scalar(f"Train_iter/{mapping_type}_{k}", v, global_step)
                     writer.add_scalar(f"Progress/epoch", epoch + (i+1)/n_steps, global_step)
 
-            # Update progress bar description less frequently
             if (i+1) % max(1, n_steps // 20) == 0:
                 progress_bar.set_description(f"E{epoch+1} {i+1}/{n_steps}: DA {loss_D_A.item():.3f}, DB {loss_D_B.item():.3f}, G {loss_G.item():.3f}")
 
@@ -491,7 +489,6 @@ def train(d_model_A, d_model_B, g_model_AtoB, g_model_BtoA,
             val_metrics = evaluate_epoch(g_model_AtoB, g_model_BtoA, val_dataloader,
                                          criterion_cycle, criterion_identity,
                                          psnr_metric, ssim_metric, device)
-            # <<< Updated print statement and logging keys >>>
             print(f"Epoch {epoch+1} Validation: CycleL={val_metrics['val_loss_cycle']:.4f}, IdL={val_metrics['val_loss_id']:.4f}, "
                   f"PSNR_Avg={val_metrics['val_psnr_avg']:.2f}, SSIM_Avg={val_metrics['val_ssim_avg']:.3f}")
             if writer:
@@ -569,7 +566,7 @@ def train(d_model_A, d_model_B, g_model_AtoB, g_model_BtoA,
 # Main Execution
 # ------------------------------
 if __name__ == '__main__':
-    
+
     global device
     # ------------------------------
     # Check Environment and GPU
@@ -601,7 +598,6 @@ if __name__ == '__main__':
     parser.add_argument('--mapping_type', type=str, default='t2_flair', choices=['t2_flair', 't1_contrast'],
                         help='Mapping type to train: t2_flair or t1_contrast')
     parser.add_argument('--epochs', type=int, default=100, help='Number of training epochs')
-    # Updated default paths for split data from original preprocessing
     parser.add_argument('--data_dir', type=str,
                         default=r'./data/processed_data/brats128_training/images',
                         help='Directory containing [0,1] normalized TRAINING .npy volumes (output of splitfolders)')
@@ -790,3 +786,4 @@ if __name__ == '__main__':
          traceback.print_exc()
          print("---------------------------", file=sys.stderr)
          sys.exit(1) # Exit with error code
+

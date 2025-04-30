@@ -1,0 +1,62 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod
+spec:
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 100
+    fsGroup: 100
+  containers:
+  - name: pap-processing
+    image: gitlab-registry.nrp-nautilus.io/prp/jupyter-stack/prp
+    env:
+    - name: REPO_PATH
+      value: /app/3d_cyclegan
+    command:
+    - "bash"
+    - "-c"
+    args:
+    - |
+      # --- User and Environment Setup ---
+      echo "Running as user: $(whoami), UID: $(id -u), GID: $(id -g)"
+      
+      # --- Git Repository Update ---
+      echo "Cloning Git repository..."
+      cd /app
+      git clone --single-branch -b main https://github.com/dan-hanson/3d_cyclegan
+      echo "Git repository cloned."
+      cd ${REPO_PATH}
+      conda env create
+      conda activate cyclegan3d_env
+      cp /data/processed_data.tar.gz .
+      echo "Data copied!"
+
+      sudo apt-get update && sudo apt-get install -y p7zip-full
+      ls -hf /data/
+      sleep infinity
+
+    volumeMounts:
+    - name: git-repo
+      mountPath: /app
+    - name: brats-data
+      mountPath: /data
+    - name: dshm
+      mountPath: /dev/shm
+    resources:
+      requests:
+        memory: 20Gi
+        cpu: "10"
+      limits:
+        memory: 24Gi
+        cpu: "12"
+  volumes:
+  - name: git-repo
+    emptyDir: {}
+  - name: brats-data
+    persistentVolumeClaim:
+      claimName: brats-data
+  - name: dshm
+    emptyDir:
+      medium: Memory
+      sizeLimit: 20Gi

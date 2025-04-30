@@ -25,14 +25,16 @@ spec:
       echo "Cloning Git repository..."
       cd /app
       git clone --single-branch -b main https://github.com/dan-hanson/3d_cyclegan
-      echo "Git repository cloned."
+      echo "Git repository cloned, doing conda stuff..."
       cd ${REPO_PATH}
       conda env create
+      eval "$(conda shell.bash hook)"
       conda activate cyclegan3d_env
-      cp /data/processed_data.tar.gz .
-      echo "Data copied!"
+      echo "cyclegan3d_env created, copying tar from pvc..."
+      cp /datam/processed_data.tar.gz .
+      echo "Data copied! Extracting..."
       tar -xzf processed_data.tar.gz
-      echo "Done extracting"
+      echo "Done extracting, starting training"
       python3 train_cycleGAN.py --data_dir processed/brats128_split/train/images --val_data_dir processed/brats128_split/val/images
 
       ls -hf /data/
@@ -41,8 +43,8 @@ spec:
     volumeMounts:
     - name: git-repo
       mountPath: /app
-    - name: brats-data
-      mountPath: /data
+    - name: brats-datam
+      mountPath: /datam
     - name: dshm
       mountPath: /dev/shm
     resources:
@@ -57,9 +59,9 @@ spec:
   volumes:
   - name: git-repo
     emptyDir: {}
-  - name: brats-data
+  - name: brats-datam
     persistentVolumeClaim:
-      claimName: brats-data
+      claimName: brats-data-many
   - name: dshm
     emptyDir:
       medium: Memory

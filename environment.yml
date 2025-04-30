@@ -8,3 +8,5 @@ dependencies:
   - torchsummary
   - torchio
   - torchmetrics
+  - matplotlib
+  - tensorboard

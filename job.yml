@@ -1,0 +1,68 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cyclegan-training-job
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 100
+        fsGroup: 100
+      containers:
+      - name: pap-processing
+        image: gitlab-registry.nrp-nautilus.io/prp/jupyter-stack/prp
+        env:
+        - name: REPO_PATH
+          value: /app/3d_cyclegan
+        command:
+        - "bash"
+        - "-c"
+        args:
+        - |
+          # --- User and Environment Setup ---
+          echo "Running as user: $(whoami), UID: $(id -u), GID: $(id -g)"
+          # --- Git Repository Update ---
+          echo "Cloning Git repository..."
+          cd /app
+          git clone --single-branch -b main https://github.com/dan-hanson/3d_cyclegan
+          echo "Git repository cloned, doing conda stuff..."
+          cd ${REPO_PATH}
+          conda env create
+          eval "$(conda shell.bash hook)"
+          conda activate cyclegan3d_env
+          echo "cyclegan3d_env created, copying tar from pvc..."
+          cp /datam/processed_data.tar.gz .
+          echo "Data copied! Extracting..."
+          tar -xzf processed_data.tar.gz
+          echo "Done extracting, starting training"
+          python3 train_cycleGAN.py --data_dir processed/brats128_split/train/images --val_data_dir processed/brats128_split/val/images
+          ls -hf /data/
+        volumeMounts:
+        - name: git-repo
+          mountPath: /app
+        - name: brats-datam
+          mountPath: /datam
+        - name: dshm
+          mountPath: /dev/shm
+        resources:
+          limits:
+            memory: 30Gi
+            cpu: "24"
+            nvidia.com/a100: "1"
+          requests:
+            memory: 25Gi
+            cpu: "20"
+            nvidia.com/a100: "1"
+      volumes:
+      - name: git-repo
+        emptyDir: {}
+      - name: brats-datam
+        persistentVolumeClaim:
+          claimName: brats-data-many
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 20Gi
+      restartPolicy: Never

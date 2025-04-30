@@ -31,8 +31,10 @@ spec:
       conda activate cyclegan3d_env
       cp /data/processed_data.tar.gz .
       echo "Data copied!"
+      tar -xzf processed_data.tar.gz
+      echo "Done extracting"
+      python3 train_cycleGAN.py --data_dir processed/brats128_split/train/images --val_data_dir processed/brats128_split/val/images
 
-      sudo apt-get update && sudo apt-get install -y p7zip-full
       ls -hf /data/
       sleep infinity
 
@@ -47,9 +49,11 @@ spec:
       requests:
         memory: 20Gi
         cpu: "10"
+        nvidia.com/gpu: "1"
       limits:
         memory: 24Gi
         cpu: "12"
+        nvidia.com/gpu: "1"
   volumes:
   - name: git-repo
     emptyDir: {}

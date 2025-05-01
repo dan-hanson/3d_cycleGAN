@@ -21,24 +21,40 @@ spec:
         - "-c"
         args:
         - |
-          # --- User and Environment Setup ---
           echo "Running as user: $(whoami), UID: $(id -u), GID: $(id -g)"
-          # --- Git Repository Update ---
-          echo "Cloning Git repository..."
+          mkdir -p /datam/cycleganfinaloutput
+          sudo chmod -R 777 /datam/cycleganfinaloutput  
           cd /app
           git clone --single-branch -b main https://github.com/dan-hanson/3d_cyclegan
-          echo "Git repository cloned, doing conda stuff..."
           cd ${REPO_PATH}
+          
+          echo "Creating and activating conda environment"
           conda env create
-          eval "$(conda shell.bash hook)"
+          source /opt/conda/etc/profile.d/conda.sh
           conda activate cyclegan3d_env
+          
           echo "cyclegan3d_env created, copying tar from pvc..."
           cp /datam/processed_data.tar.gz .
           echo "Data copied! Extracting..."
           tar -xzf processed_data.tar.gz
-          echo "Done extracting, starting training"
-          python3 train_cycleGAN.py --data_dir processed/brats128_split/train/images --val_data_dir processed/brats128_split/val/images --output_base_dir /datam/cycleganfinaloutput --epochs 200
-          ls -hf /data/
+          echo "Done extracting."
+          echo "Creating output directory /datam/cycleganfinaloutput..."
+          mkdir -p /datam/cycleganfinaloutput
+          echo "Starting training..."
+          python3 train_cycleGAN.py \
+          --mapping_type t2_flair \
+          --data_dir processed/brats128_split/train/images \
+          --val_data_dir processed/brats128_split/val/images \
+          --output_base_dir /datam/cycleganfinaloutput \
+          --epochs 200 \
+          --use_tb
+          
+          echo "Training finished. Listing output directory contents:"
+          ls -lh /datam/cycleganfinaloutput/
+          echo 'Listing contents of mapping-specific subdirectories (if they exist):'
+          ls -lh /datam/cycleganfinaloutput/t2_flair/ || echo "Directory not found"
+          ls -lh /datam/cycleganfinaloutput/t2_flair/checkpoints/ || echo "Directory not found" 
+          ls -lh /datam/cycleganfinaloutput/t2_flair/logs/ || echo "Directory not found"
         volumeMounts:
         - name: git-repo
           mountPath: /app

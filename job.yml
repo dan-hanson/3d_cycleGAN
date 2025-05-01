@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: cyclegan-training-job
+  name: cyclegan-training-job-200epoch-saveoutputto-datam
 spec:
   backoffLimit: 1
   template:

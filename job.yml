@@ -37,7 +37,7 @@ spec:
           echo "Data copied! Extracting..."
           tar -xzf processed_data.tar.gz
           echo "Done extracting, starting training"
-          python3 train_cycleGAN.py --data_dir processed/brats128_split/train/images --val_data_dir processed/brats128_split/val/images
+          python3 train_cycleGAN.py --data_dir processed/brats128_split/train/images --val_data_dir processed/brats128_split/val/images --output_base_dir /datam/cycleganfinaloutput --epochs 200
           ls -hf /data/
         volumeMounts:
         - name: git-repo

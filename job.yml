@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: cyclegan-training-job-200epoch-saveoutputto-datam
+  name: cyclegan-training-job
 spec:
   backoffLimit: 1
   template:
@@ -34,7 +34,7 @@ spec:
           conda activate cyclegan3d_env
           
           echo "cyclegan3d_env created, copying tar from pvc..."
-          cp /datam/processed_data.tar.gz .
+          cp /datam/brats128_processed_20250502_040703.tar.gz  .
           echo "Data copied! Extracting..."
           tar -xzf processed_data.tar.gz
           echo "Done extracting."
@@ -42,7 +42,7 @@ spec:
           mkdir -p /datam/cycleganfinaloutput
           echo "Starting training..."
           python3 train_cycleGAN.py \
-          --mapping_type t2_flair \
+          --mapping_type t1ce \
           --data_dir processed/brats128_split/train/images \
           --val_data_dir processed/brats128_split/val/images \
           --output_base_dir /datam/cycleganfinaloutput \

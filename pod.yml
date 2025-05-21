@@ -21,7 +21,7 @@ spec:
       echo "Cloning Git repository..."
       cd /app
       git clone --single-branch -b main https://github.com/dan-hanson/3d_cyclegan
-      cd /3d_cyclegan
+      cd 3d_cyclegan
 
       echo "Git repository cloned, doing install requirements.txt."
       pip install -r requirements.txt

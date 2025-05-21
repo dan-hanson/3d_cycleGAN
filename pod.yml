@@ -21,12 +21,12 @@ spec:
       echo "Cloning Git repository..."
       cd /app
       git clone --single-branch -b main https://github.com/dan-hanson/3d_cyclegan
+      cd /3d_cyclegan
 
       echo "Git repository cloned, doing install requirements.txt."
       pip install -r requirements.txt
 
-
-      echo "cyclegan3d_env created, copying tar from pvc..."
+      echo "Copying tar from pvc..."
       cp /data/brats128_processed_20250511_143910.tar.gz .
 
       echo "Data copied! Extracting..."

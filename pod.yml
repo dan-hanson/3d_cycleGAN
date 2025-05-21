@@ -18,24 +18,22 @@ spec:
     - "-c"
     args:
     - |
-      # --- User and Environment Setup ---
-      echo "Running as user: $(whoami), UID: $(id -u), GID: $(id -g)"
-      
-      # --- Git Repository Update ---
       echo "Cloning Git repository..."
       cd /app
       git clone --single-branch -b main https://github.com/dan-hanson/3d_cyclegan
-      echo "Git repository cloned, doing conda stuff..."
-      cd ${REPO_PATH}
-      conda env create
-      eval "$(conda shell.bash hook)"
-      conda activate cyclegan3d_env
+
+      echo "Git repository cloned, doing install requirements.txt."
+      pip install -r requirements.txt
+
+
       echo "cyclegan3d_env created, copying tar from pvc..."
-      cp /datam/processed_data.tar.gz .
+      cp /data/brats128_processed_20250511_143910.tar.gz .
+
       echo "Data copied! Extracting..."
-      tar -xzf processed_data.tar.gz
-      echo "Done extracting, starting training"
-      python3 train_cycleGAN.py --data_dir processed/brats128_split/train/images --val_data_dir processed/brats128_split/val/images
+      tar -xzf brats128_processed_20250511_143910.tar.gz
+
+      # echo "Done extracting, starting training"
+      # python3 train_cycleGAN.py --data_dir processed/brats128_split/train/images --val_data_dir processed/brats128_split/val/images
 
       ls -hf /data/
       sleep infinity
@@ -43,8 +41,8 @@ spec:
     volumeMounts:
     - name: git-repo
       mountPath: /app
-    - name: brats-datam
-      mountPath: /datam
+    - name: brats-data
+      mountPath: /data
     - name: dshm
       mountPath: /dev/shm
     resources:
@@ -59,9 +57,9 @@ spec:
   volumes:
   - name: git-repo
     emptyDir: {}
-  - name: brats-datam
+  - name: brats-data
     persistentVolumeClaim:
-      claimName: brats-data-many
+      claimName: brats-data
   - name: dshm
     emptyDir:
       medium: Memory
